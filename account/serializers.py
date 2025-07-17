@@ -5,6 +5,9 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .utils import send_verification_email_with_api
 from google.oauth2 import id_token
 from django.conf import settings
+from rest_framework import serializers
+from django.contrib.auth import authenticate, get_user_model
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from google.auth.transport import requests
 
 User = get_user_model()
@@ -58,23 +61,13 @@ class UserSerializer(serializers.ModelSerializer):
         profile.save()
         return instance
     
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    def validate(self, attrs):
-        data = super().validate(attrs)
-        
-        # Check if email is verified
-        if not self.user.is_email_verified:
-            raise serializers.ValidationError({
-                'non_field_errors': ['Please verify your email before logging in.']
-            })
-        
-        return data
     
 class GoogleAuthSerializer(serializers.Serializer):
     token = serializers.CharField()
     
     def validate_token(self, value):
         try:
+            # Verify the Google token
             idinfo = id_token.verify_oauth2_token(
                 value, 
                 requests.Request(), 
@@ -86,10 +79,11 @@ class GoogleAuthSerializer(serializers.Serializer):
             
             return {
                 'email': idinfo.get('email'),
-                'first_name': idinfo.get('given_name', ''),
-                'last_name': idinfo.get('family_name', ''),
+                'given_name': idinfo.get('given_name', ''),
+                'family_name': idinfo.get('family_name', ''),
                 'google_id': idinfo.get('sub'),
                 'email_verified': idinfo.get('email_verified', False),
+                'picture': idinfo.get('picture', ''),
             }
             
         except ValueError as e:

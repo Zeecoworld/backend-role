@@ -7,6 +7,7 @@ from cloudinary.models import CloudinaryField
 
 class User(AbstractUser):
     email = models.EmailField(unique=True)
+    username = models.CharField(max_length=10,unique=True)
     is_email_verified = models.BooleanField(default=False)
     google_id = models.CharField(max_length=255, blank=True, null=True, unique=True)
 

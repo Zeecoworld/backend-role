@@ -5,3 +5,4 @@ from .models import Post,Like,Share,Comment
 admin.site.register(Post)
 admin.site.register(Share)
 admin.site.register(Comment)
+admin.site.register(Like)

@@ -7,12 +7,7 @@ from .models import EmailVerificationToken
 
 
 def send_verification_email_with_api(user):
-    """Send verification email using Mailtrap API"""
-    
-    # Debug configuration
-    print(f"🔍 API Token: {settings.MAILTRAP_API_TOKEN[:10]}..." if settings.MAILTRAP_API_TOKEN else "❌ No token")
-    print(f"🔍 Inbox ID: {settings.MAILTRAP_INBOX_ID}")
-    print(f"🔍 From Email: {settings.DEFAULT_FROM_EMAIL}")
+
     
     # Create or get existing token
     token, created = EmailVerificationToken.objects.get_or_create(
@@ -33,9 +28,7 @@ def send_verification_email_with_api(user):
             'verification_url': verification_url,
             'token': token.token
         })
-        print("✓ Template loaded successfully")
     except Exception as e:
-        print(f"✗ Template loading failed: {e}")
         return False
     
     plain_message = strip_tags(html_message)
@@ -68,20 +61,12 @@ def send_verification_email_with_api(user):
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         
-        print(f"🔄 Request URL: {url}")
-        print(f"📊 Status Code: {response.status_code}")
-        print(f"📝 Response: {response.text}")
-        
         if response.status_code == 200:
-            print("✓ Email sent successfully via Mailtrap API")
             return True
         else:
-            print(f"✗ Email sending failed: {response.status_code} - {response.text}")
             return False
             
     except requests.exceptions.RequestException as e:
-        print(f"✗ API request failed: {e}")
         return False
     except Exception as e:
-        print(f"✗ Unexpected error: {e}")
         return False

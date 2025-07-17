@@ -1,20 +1,23 @@
 from rest_framework import generics, permissions, status
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.exceptions import PermissionDenied
 from django.contrib.auth import get_user_model
+from django.contrib.auth import authenticate
 from .serializers import (
     RegisterSerializer, 
     EmailVerificationSerializer, 
     ResendVerificationSerializer,
-    CustomTokenObtainPairSerializer,
     GoogleAuthSerializer,
     UserSerializer
 )
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import EmailVerificationToken
+from django.contrib.auth import authenticate
 from .utils import send_verification_email_with_api
-import secrets,string
-
+import secrets, string
 
 User = get_user_model()
 
@@ -106,9 +109,6 @@ class ResendVerificationView(generics.GenericAPIView):
             }, status=status.HTTP_404_NOT_FOUND)
 
 
-class CustomTokenObtainPairView(TokenObtainPairView):
-    serializer_class = CustomTokenObtainPairSerializer
-
 class ProfileView(generics.RetrieveUpdateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
@@ -117,6 +117,67 @@ class ProfileView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+    
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login_view(request):
+    try:
+        data = request.data
+
+        email = data.get('email') or data.get('username')  
+        password = data.get('password')
+
+        if not email or not password:
+            return Response({
+                'detail': 'Email and password are required',
+                'received_fields': list(data.keys())
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Try to get user by email
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({
+                'detail': 'Invalid email or password'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Check if email is verified
+        if not user.is_email_verified:
+            return Response({
+                'detail': 'Please verify your email before logging in. Check your inbox for a verification link.'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Authenticate user using username and password
+        authenticated_user = authenticate(username=user.username, password=password)
+        
+        if authenticated_user:
+            # Generate JWT tokens
+            refresh = RefreshToken.for_user(user)
+            
+            return Response({
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'name': f"{user.first_name} {user.last_name}".strip() or user.username,
+                    'is_email_verified': user.is_email_verified,
+                }
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'detail': 'Invalid email or password'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+            
+    except Exception as e:
+        import traceback
+        return Response({
+            'detail': 'An error occurred during login',
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 
 class GoogleAuthView(generics.GenericAPIView):
@@ -131,19 +192,35 @@ class GoogleAuthView(generics.GenericAPIView):
         user_data = serializer.validated_data['token']
         
         email = user_data.get('email')
-        first_name = user_data.get('first_name')
-        last_name = user_data.get('last_name')
+        given_name = user_data.get('given_name', '')
+        family_name = user_data.get('family_name', '')
         google_id = user_data.get('google_id')
+        picture = user_data.get('picture', '')
+        
+        # Generate username from email if names are not provided
+        username = email.split('@')[0] if email else 'user'
+        full_name = f"{given_name} {family_name}".strip()
+        if not full_name:
+            full_name = username
         
         try:
-            # Check if user exists
+            # Check if user exists by email
             user = User.objects.get(email=email)
             
             # Link Google account if not already linked
             if not user.google_id:
                 user.google_id = google_id
                 user.is_email_verified = True
+                if not user.first_name and given_name:
+                    user.first_name = given_name
+                if not user.last_name and family_name:
+                    user.last_name = family_name
                 user.save()
+                
+            # Update profile picture if available
+            if picture and hasattr(user, 'profile'):
+                # You can save the picture URL to profile if needed
+                pass
                 
         except User.DoesNotExist:
             # Create new user
@@ -151,24 +228,37 @@ class GoogleAuthView(generics.GenericAPIView):
                 string.ascii_letters + string.digits
             ) for _ in range(12))
             
+            # Ensure unique username
+            base_username = username
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{base_username}{counter}"
+                counter += 1
+            
             user = User.objects.create_user(
+                username=username,
                 email=email,
-                first_name=first_name,
-                last_name=last_name,
+                first_name=given_name,
+                last_name=family_name,
                 password=random_password,
                 is_email_verified=True,
                 google_id=google_id
             )
+            
+            # Create user profile
+            UserProfile.objects.create(user=user)
         
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
         
         return Response({
-            'access_token': str(refresh.access_token),
-            'refresh_token': str(refresh),
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
             'user': {
                 'id': user.id,
+                'username': user.username,
                 'email': user.email,
+                'name': full_name,
                 'first_name': user.first_name,
                 'last_name': user.last_name,
                 'is_email_verified': user.is_email_verified,
