@@ -20,7 +20,6 @@ class User(AbstractUser):
 
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    # profile_picture = models.ImageField(upload_to='profiles/', null=True, blank=True)
     image = CloudinaryField('profile', null=True, blank=True)
     bio = models.TextField(blank=True)
 
