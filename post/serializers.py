@@ -3,6 +3,9 @@ from .models import Post, Like, Comment, Share, PostMedia, Bookmark
 from django.contrib.auth import get_user_model
 import json
 import filetype
+from django.core.files.uploadedfile import InMemoryUploadedFile
+from PIL import Image as PILImage
+import io
 
 User = get_user_model()
 
@@ -13,9 +16,9 @@ def validate_file_type_and_size(file, allowed_types, max_size_mb, field_name):
     # Check file size
     max_size_bytes = max_size_mb * 1024 * 1024
     if file.size > max_size_bytes:
-        raise serializers.ValidationError(
-            f"{field_name} file size cannot exceed {max_size_mb}MB"
-        )
+        raise serializers.ValidationError({
+            field_name.lower(): f"{field_name} file size cannot exceed {max_size_mb}MB. Current size: {file.size / (1024*1024):.1f}MB"
+        })
     
     # Check file type using filetype magic bytes detection
     file_bytes = file.read(261)  # Read first 261 bytes for detection
@@ -23,82 +26,19 @@ def validate_file_type_and_size(file, allowed_types, max_size_mb, field_name):
     
     kind = filetype.guess(file_bytes)
     if not kind:
-        raise serializers.ValidationError(
-            f"Unable to determine {field_name} file type"
-        )
+        raise serializers.ValidationError({
+            field_name.lower(): f"Unable to determine {field_name} file type. Please ensure you're uploading a valid file."
+        })
     
     if kind.mime not in allowed_types:
-        raise serializers.ValidationError(
-            f"Unsupported {field_name} format. Allowed: {', '.join(allowed_types)}"
-        )
+        raise serializers.ValidationError({
+            field_name.lower(): f"Unsupported {field_name} format. Supported formats: {', '.join([t.split('/')[-1].upper() for t in allowed_types])}"
+        })
     
     return file
 
-class PostMediaSerializer(serializers.ModelSerializer):
-    """Serializer for additional post media"""
-    
-    class Meta:
-        model = PostMedia
-        fields = ['id', 'media_file', 'media_type', 'caption', 'order']
-    
-    def validate_media_file(self, value):
-        """Validate media file based on media_type"""
-        media_type = self.initial_data.get('media_type', 'image')
-        
-        if media_type == 'image':
-            allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-            return validate_file_type_and_size(value, allowed_types, 10, 'image')
-        
-        elif media_type == 'video':
-            allowed_types = ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime']
-            return validate_file_type_and_size(value, allowed_types, 100, 'video')
-        
-        elif media_type == 'audio':
-            allowed_types = ['audio/mpeg', 'audio/wav', 'audio/ogg']
-            return validate_file_type_and_size(value, allowed_types, 50, 'audio')
-        
-        elif media_type == 'document':
-            allowed_types = ['application/pdf', 'application/msword', 'text/plain']
-            return validate_file_type_and_size(value, allowed_types, 25, 'document')
-        
-        return value
-
-class CommentSerializer(serializers.ModelSerializer):
-    """Serializer for post comments with reply support"""
-    
-    user = serializers.SerializerMethodField()
-    user_email = serializers.SerializerMethodField()
-    replies_count = serializers.SerializerMethodField()
-    is_reply = serializers.ReadOnlyField()
-
-    class Meta:
-        model = Comment
-        fields = [
-            'id', 'user', 'user_email', 'text', 'parent', 
-            'created_at', 'updated_at', 'is_edited', 'is_reply', 'replies_count'
-        ]
-
-    def get_user(self, obj):
-        return obj.user.username
-    
-    def get_user_email(self, obj):
-        return obj.user.email
-    
-    def get_replies_count(self, obj):
-        return obj.replies.count()
-    
-    def validate_text(self, value):
-        """Validate comment text"""
-        if not value or not value.strip():
-            raise serializers.ValidationError("Comment cannot be empty")
-        
-        if len(value) > 1000:
-            raise serializers.ValidationError("Comment cannot exceed 1000 characters")
-        
-        return value.strip()
-
 class PostSerializer(serializers.ModelSerializer):
-    """Main post serializer with enhanced validation"""
+    """Main post serializer with enhanced validation and AUTO CONTENT TYPE DETECTION"""
     
     author = serializers.SerializerMethodField()
     author_email = serializers.SerializerMethodField()
@@ -108,12 +48,15 @@ class PostSerializer(serializers.ModelSerializer):
     bookmarks_count = serializers.SerializerMethodField()
     slug = serializers.SlugField(read_only=True)
     tags_list = serializers.SerializerMethodField()
-    additional_media = PostMediaSerializer(many=True, read_only=True)
+    additional_media = serializers.SerializerMethodField()
     workflow_steps_parsed = serializers.SerializerMethodField()
     
-    # Media fields
+    # Enhanced media fields with URLs
     image = serializers.ImageField(required=False, allow_null=True)
     video = serializers.FileField(required=False, allow_null=True)
+    image_url = serializers.SerializerMethodField()
+    video_url = serializers.SerializerMethodField()
+    video_thumbnail_url = serializers.SerializerMethodField()
     
     # User interaction fields (read-only)
     is_liked = serializers.SerializerMethodField()
@@ -124,15 +67,17 @@ class PostSerializer(serializers.ModelSerializer):
         model = Post
         fields = [
             'id', 'slug', 'author', 'author_email', 'title', 'content', 
-            'content_type', 'status', 'image', 'video', 'tags', 'tags_list',
-            'location', 'story_chapters', 'workflow_steps', 'workflow_steps_parsed',
-            'meta_description', 'created_at', 'updated_at', 'published_at',
-            'view_count', 'likes_count', 'comments_count', 'shares_count', 
-            'bookmarks_count', 'additional_media', 'is_liked', 'is_bookmarked',
-            'is_owned', 'has_media', 'is_video_content', 'is_image_content'
+            'content_type', 'status', 'image', 'video', 'image_url', 'video_url', 
+            'video_thumbnail_url', 'tags', 'tags_list', 'location', 'story_chapters', 
+            'workflow_steps', 'workflow_steps_parsed', 'meta_description', 
+            'created_at', 'updated_at', 'published_at', 'view_count', 
+            'likes_count', 'comments_count', 'shares_count', 'bookmarks_count', 
+            'additional_media', 'is_liked', 'is_bookmarked', 'is_owned', 
+            'has_media', 'is_video_content', 'is_image_content'
         ]
         read_only_fields = [
-            'slug', 'view_count', 'created_at', 'updated_at', 'published_at'
+            'slug', 'view_count', 'created_at', 'updated_at', 'published_at',
+            'image_url', 'video_url', 'video_thumbnail_url'
         ]
 
     def get_author(self, obj):
@@ -156,6 +101,11 @@ class PostSerializer(serializers.ModelSerializer):
     def get_tags_list(self, obj):
         return obj.get_tags_list()
     
+    def get_additional_media(self, obj):
+        if hasattr(obj, 'additional_media'):
+            return PostMediaSerializer(obj.additional_media.all(), many=True).data
+        return []
+    
     def get_workflow_steps_parsed(self, obj):
         """Parse workflow steps JSON string"""
         if obj.workflow_steps:
@@ -164,6 +114,18 @@ class PostSerializer(serializers.ModelSerializer):
             except json.JSONDecodeError:
                 return []
         return []
+    
+    def get_image_url(self, obj):
+        """Get image URL for frontend"""
+        return obj.image_url
+    
+    def get_video_url(self, obj):
+        """Get video URL for frontend"""
+        return obj.video_url
+    
+    def get_video_thumbnail_url(self, obj):
+        """Get video thumbnail URL for frontend"""
+        return obj.video_thumbnail_url
     
     def get_is_liked(self, obj):
         """Check if current user liked this post"""
@@ -197,14 +159,65 @@ class PostSerializer(serializers.ModelSerializer):
         """Validate image file type and size"""
         if value:
             allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
-            return validate_file_type_and_size(value, allowed_types, 10, 'Image')
+            validated_file = validate_file_type_and_size(value, allowed_types, 10, 'Image')
+            
+            # Additional image validation
+            try:
+                # Open image to verify it's valid
+                img = PILImage.open(validated_file)
+                img.verify()
+                validated_file.seek(0)  # Reset file pointer after verify
+                
+                # Check dimensions (optional)
+                img = PILImage.open(validated_file)
+                width, height = img.size
+                validated_file.seek(0)
+                
+                if width < 10 or height < 10:
+                    raise serializers.ValidationError({
+                        'image': 'Image dimensions too small. Minimum 10x10 pixels.'
+                    })
+                    
+                if width > 8000 or height > 8000:
+                    raise serializers.ValidationError({
+                        'image': 'Image dimensions too large. Maximum 8000x8000 pixels.'
+                    })
+                    
+            except Exception as e:
+                raise serializers.ValidationError({
+                    'image': f'Invalid image file: {str(e)}'
+                })
+                
+            return validated_file
         return value
     
     def validate_video(self, value):
         """Validate video file type and size"""
         if value:
-            allowed_types = ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime']
-            return validate_file_type_and_size(value, allowed_types, 100, 'Video')
+            allowed_types = [
+                'video/mp4', 'video/webm', 'video/ogg', 
+                'video/quicktime', 'video/avi', 'video/mov'
+            ]
+            validated_file = validate_file_type_and_size(value, allowed_types, 100, 'Video')
+            
+            # Additional video validation
+            if hasattr(validated_file, 'content_type'):
+                content_type = validated_file.content_type
+            else:
+                # Fallback to file extension detection
+                file_bytes = validated_file.read(261)
+                validated_file.seek(0)
+                kind = filetype.guess(file_bytes)
+                content_type = kind.mime if kind else 'unknown'
+            
+            # Check for common video container formats
+            valid_containers = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'quicktime']
+            if not any(container in content_type.lower() for container in valid_containers):
+                raise serializers.ValidationError({
+                    'video': f'Unsupported video format: {content_type}. Supported formats: MP4, WebM, OGG, MOV, AVI'
+                })
+            
+            return validated_file
         return value
     
     def validate_workflow_steps(self, value):
@@ -309,21 +322,73 @@ class PostSerializer(serializers.ModelSerializer):
         if value and len(value) > 200:
             raise serializers.ValidationError("Location cannot exceed 200 characters")
         return value
+
+    def auto_detect_content_type(self, validated_data):
+        """
+        🔧 AUTO-DETECT CONTENT TYPE - This fixes the image/video mismatch issue
+        Priority: User selection > File type detection > Default
+        """
+        user_content_type = validated_data.get('content_type', 'post')
+        image = validated_data.get('image')
+        video = validated_data.get('video')
+        workflow_steps = validated_data.get('workflow_steps')
+        
+        print(f"🔧 Content type detection - User selected: {user_content_type}, Has image: {bool(image)}, Has video: {bool(video)}")
+        
+        # Priority 1: If user explicitly set workflow or story, respect it
+        if user_content_type in ['story', 'workflow']:
+            print(f"✅ Keeping user-selected content type: {user_content_type}")
+            return user_content_type
+        
+        # Priority 2: Auto-detect based on uploaded files
+        if video:
+            # If video file is uploaded, it's definitely a video post
+            print("✅ Video file detected - setting content_type to 'video'")
+            return 'video'
+        
+        elif image:
+            # If only image is uploaded, determine based on context
+            if user_content_type == 'image':
+                # User explicitly wants image post
+                print("✅ Image file + user selected 'image' - setting content_type to 'image'")
+                return 'image'
+            
+            elif user_content_type in ['post', 'video']:
+                # User selected post/video but only uploaded image
+                # This is likely an image post (fixes the bug!)
+                print("✅ Image file + user selected 'post'/'video' - setting content_type to 'image'")
+                return 'image'
+        
+        elif workflow_steps:
+            print("✅ Workflow steps detected - setting content_type to 'workflow'")
+            return 'workflow'
+        
+        # Priority 3: Default fallback
+        print(f"✅ Using fallback content_type: {user_content_type or 'post'}")
+        return user_content_type or 'post'
     
     def validate(self, data):
-        """Enhanced cross-field validation with filetype checking"""
-        content_type = data.get('content_type', 'post')
+        """Enhanced cross-field validation with AUTO CONTENT TYPE DETECTION"""
+        
+        # 🔧 AUTO-DETECT CONTENT TYPE BEFORE VALIDATION
+        detected_content_type = self.auto_detect_content_type(data)
+        data['content_type'] = detected_content_type
+        
+        content_type = detected_content_type
         image = data.get('image')
         video = data.get('video')
         title = data.get('title', '')
         content = data.get('content', '')
         workflow_steps = data.get('workflow_steps')
         
-        # Content type specific validation
+        print(f"🔧 Validating with detected content_type: {content_type}")
+        
+        # Content type specific validation with proper error messages
         if content_type == 'video':
             if not video and not image:
                 raise serializers.ValidationError({
-                    'video': 'Video posts must include either a video file or a thumbnail image'
+                    'video': 'Video posts must include either a video file or a thumbnail image',
+                    'image': 'Video posts must include either a video file or a thumbnail image'
                 })
         
         elif content_type == 'image':
@@ -347,13 +412,6 @@ class PostSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'content': 'Story posts must have at least 100 characters of content'
                 })
-            
-            # Validate story chapters
-            story_chapters = data.get('story_chapters', 1)
-            if story_chapters > 1 and len(content.strip()) < 200:
-                raise serializers.ValidationError({
-                    'content': 'Multi-chapter stories must have at least 200 characters of content'
-                })
         
         elif content_type == 'workflow':
             if not workflow_steps:
@@ -365,31 +423,25 @@ class PostSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'title': 'Workflow posts must have a title'
                 })
-            
-            # Validate workflow steps structure
-            try:
-                steps = json.loads(workflow_steps) if isinstance(workflow_steps, str) else workflow_steps
-                if len(steps) < 2:
-                    raise serializers.ValidationError({
-                        'workflow_steps': 'Workflow must have at least 2 steps'
-                    })
-            except (json.JSONDecodeError, TypeError):
-                raise serializers.ValidationError({
-                    'workflow_steps': 'Invalid workflow steps format'
-                })
         
         elif content_type == 'post':
             # Regular posts validation
             if not title.strip() and not content.strip() and not image and not video:
-                raise serializers.ValidationError(
-                    'Posts must have either a title, content, or media'
-                )
+                raise serializers.ValidationError({
+                    'non_field_errors': ['Posts must have either a title, content, or media']
+                })
         
-        # Validate that video and image aren't both provided for non-video content
-        if content_type != 'video' and video and image:
-            raise serializers.ValidationError(
-                'Only video content type can have both video and image files'
-            )
+        # File size warnings (non-blocking)
+        warnings = []
+        if video and video.size > 50 * 1024 * 1024:  # 50MB
+            warnings.append("Large video files may take longer to upload and process")
+        
+        if image and image.size > 5 * 1024 * 1024:  # 5MB
+            warnings.append("Large image files may take longer to upload")
+        
+        # Store warnings in context for frontend display
+        if warnings and hasattr(self, 'context'):
+            self.context['warnings'] = warnings
         
         return data
     
@@ -400,15 +452,50 @@ class PostSerializer(serializers.ModelSerializer):
         
         # Handle workflow steps
         if validated_data.get('workflow_steps'):
-            # Ensure it's a valid JSON string
             steps = validated_data['workflow_steps']
             if isinstance(steps, (list, dict)):
                 validated_data['workflow_steps'] = json.dumps(steps)
         
+        # Log final content type for debugging
+        print(f"🔧 Creating post with final content_type: {validated_data.get('content_type')}")
+        
         return Post.objects.create(**validated_data)
 
+class PostMediaSerializer(serializers.ModelSerializer):
+    """Serializer for additional post media"""
+    
+    media_url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = PostMedia
+        fields = ['id', 'media_file', 'media_url', 'thumbnail_url', 'media_type', 'caption', 'order']
+    
+    def get_media_url(self, obj):
+        if obj.media_file:
+            return str(obj.media_file.url)
+        return None
+    
+    def get_thumbnail_url(self, obj):
+        if obj.media_file and obj.media_type == 'video':
+            # Generate video thumbnail
+            import cloudinary
+            try:
+                return cloudinary.utils.cloudinary_url(
+                    obj.media_file.public_id,
+                    resource_type='video',
+                    format='jpg',
+                    transformation=[
+                        {'quality': 'auto:good'},
+                        {'width': 300, 'height': 200, 'crop': 'fill'}
+                    ]
+                )[0]
+            except:
+                return None
+        return None
+
 class PostCreateSerializer(PostSerializer):
-    """Simplified serializer for post creation"""
+    """Simplified serializer for post creation with enhanced validation and AUTO DETECTION"""
     
     class Meta(PostSerializer.Meta):
         fields = [
@@ -416,6 +503,27 @@ class PostCreateSerializer(PostSerializer):
             'tags', 'location', 'story_chapters', 'workflow_steps',
             'meta_description'
         ]
+
+    def to_internal_value(self, data):
+        """Enhanced validation with detailed error messages"""
+        try:
+            return super().to_internal_value(data)
+        except serializers.ValidationError as e:
+            # Enhance error messages for frontend
+            enhanced_errors = {}
+            for field, errors in e.detail.items():
+                if field == 'image' and 'file size' in str(errors[0]).lower():
+                    enhanced_errors[field] = [
+                        f"{errors[0]} Please compress your image or choose a smaller file."
+                    ]
+                elif field == 'video' and 'file size' in str(errors[0]).lower():
+                    enhanced_errors[field] = [
+                        f"{errors[0]} Please compress your video or choose a smaller file."
+                    ]
+                else:
+                    enhanced_errors[field] = errors
+            
+            raise serializers.ValidationError(enhanced_errors)
 
 class PostDetailSerializer(PostSerializer):
     """Detailed serializer with comments for single post view"""
@@ -429,6 +537,40 @@ class PostDetailSerializer(PostSerializer):
         """Get recent comments for this post"""
         recent_comments = obj.comments.filter(parent=None).order_by('-created_at')[:5]
         return CommentSerializer(recent_comments, many=True).data
+
+class CommentSerializer(serializers.ModelSerializer):
+    """Serializer for post comments with reply support"""
+    
+    user = serializers.SerializerMethodField()
+    user_email = serializers.SerializerMethodField()
+    replies_count = serializers.SerializerMethodField()
+    is_reply = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Comment
+        fields = [
+            'id', 'user', 'user_email', 'text', 'parent', 
+            'created_at', 'updated_at', 'is_edited', 'is_reply', 'replies_count'
+        ]
+
+    def get_user(self, obj):
+        return obj.user.username
+    
+    def get_user_email(self, obj):
+        return obj.user.email
+    
+    def get_replies_count(self, obj):
+        return obj.replies.count()
+    
+    def validate_text(self, value):
+        """Validate comment text"""
+        if not value or not value.strip():
+            raise serializers.ValidationError("Comment cannot be empty")
+        
+        if len(value) > 1000:
+            raise serializers.ValidationError("Comment cannot exceed 1000 characters")
+        
+        return value.strip()
 
 class LikeSerializer(serializers.ModelSerializer):
     """Serializer for post likes"""
@@ -482,6 +624,31 @@ class PostStatsSerializer(serializers.ModelSerializer):
             return round((total_engagement / obj.view_count) * 100, 2)
         return 0
 
+# Specialized serializers for different content types
+class VideoPostSerializer(PostSerializer):
+    """Serializer specifically for video content with additional video metadata"""
+    
+    video_duration = serializers.SerializerMethodField()
+    video_format = serializers.SerializerMethodField()
+    
+    class Meta(PostSerializer.Meta):
+        fields = PostSerializer.Meta.fields + ['video_duration', 'video_format']
+    
+    def get_video_duration(self, obj):
+        """Get video duration if available"""
+        # This would require additional processing or metadata storage
+        return None
+    
+    def get_video_format(self, obj):
+        """Get video format"""
+        if obj.video:
+            # Extract format from cloudinary metadata
+            try:
+                return obj.video.format or 'mp4'
+            except:
+                return 'mp4'
+        return None
+
 # Content type specific serializers
 class StoryPostSerializer(PostSerializer):
     """Serializer specifically for story content"""
@@ -522,17 +689,4 @@ class ImagePostSerializer(PostSerializer):
         if data.get('content_type') == 'image':
             if not data.get('image'):
                 raise serializers.ValidationError("Image posts must include an image")
-        return data
-
-class VideoPostSerializer(PostSerializer):
-    """Serializer specifically for video content"""
-    
-    class Meta(PostSerializer.Meta):
-        fields = PostSerializer.Meta.fields
-    
-    def validate(self, data):
-        data = super().validate(data)
-        if data.get('content_type') == 'video':
-            if not data.get('video') and not data.get('image'):
-                raise serializers.ValidationError("Video posts must include video or thumbnail")
         return data

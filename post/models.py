@@ -5,12 +5,9 @@ from django.contrib.auth import get_user_model
 from cloudinary.models import CloudinaryField
 from django.utils.text import slugify
 from django.urls import reverse
+import cloudinary
 
 User = get_user_model()
-
-
-
-
 
 
 class Post(models.Model):
@@ -22,7 +19,6 @@ class Post(models.Model):
         ('workflow', 'Workflow'),
     ]
 
-    # Post status choices
     STATUS_CHOICES = [
         ('draft', 'Draft'),
         ('published', 'Published'),
@@ -137,6 +133,37 @@ class Post(models.Model):
     @property
     def has_media(self):
         return bool(self.image or self.video)
+    
+    @property
+    def video_url(self):
+        """Get video URL for frontend consumption"""
+        if self.video:
+            return str(self.video.url)
+        return None
+    
+    @property
+    def video_thumbnail_url(self):
+        """Get video thumbnail URL"""
+        if self.video:
+            # Cloudinary can generate video thumbnails
+            video_public_id = self.video.public_id
+            return cloudinary.utils.cloudinary_url(
+                video_public_id,
+                resource_type='video',
+                format='jpg',
+                transformation=[
+                    {'quality': 'auto:good'},
+                    {'width': 500, 'height': 300, 'crop': 'fill'}
+                ]
+            )[0]
+        return None
+    
+    @property 
+    def image_url(self):
+        """Get image URL for frontend consumption"""
+        if self.image:
+            return str(self.image.url)
+        return None
     
     def __str__(self):
         return f"{self.get_content_type_display()}: {self.title}"
