@@ -1,6 +1,11 @@
 from .base import *
 import dj_database_url
 import cloudinary
+from datetime import timedelta
+import os
+
+# Initialize DATABASES as a dictionary, not a list
+DATABASES = {}
 
 # Debug Mode
 DEBUG = False
@@ -11,14 +16,6 @@ FRONTEND_URL = os.getenv('FRONTEND_URL')
 # Allowed Hosts - Should be set from environment variable
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',') if os.getenv('ALLOWED_HOSTS') else []
 
-# Database configuration for production
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
-
 # Override with production database if DATABASE_URL is provided
 raw_database_url = os.getenv('DATABASE_URL')
 if raw_database_url:
@@ -26,13 +23,25 @@ if raw_database_url:
         database_url_str = raw_database_url.decode('utf-8')
     else:
         database_url_str = raw_database_url
-    
+        
     try:
         DATABASES['default'] = dj_database_url.parse(database_url_str, conn_max_age=600)
         print(f"Using production database: {DATABASES['default']['ENGINE']}")
     except Exception as e:
         print(f"Error parsing DATABASE_URL: {e}")
         print("Falling back to SQLite")
+        # Fallback to SQLite if DATABASE_URL parsing fails
+        DATABASES['default'] = {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+else:
+    # Default SQLite configuration if no DATABASE_URL is provided
+    print("No DATABASE_URL found, using SQLite")
+    DATABASES['default'] = {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
 
 # CORS Settings for Production
 CORS_ALLOWED_ORIGINS = [
@@ -131,7 +140,6 @@ LOGGING = {
 }
 
 # Ensure logs directory exists
-import os
 logs_dir = BASE_DIR / 'logs'
 if not os.path.exists(logs_dir):
     os.makedirs(logs_dir)
