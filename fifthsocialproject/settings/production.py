@@ -4,16 +4,20 @@ import cloudinary
 from datetime import timedelta
 import os
 
-# Initialize DATABASES as a dictionary, not a list
 DATABASES = {}
 
-# Debug Mode
 DEBUG = False
 
-# Frontend URL
 FRONTEND_URL = os.getenv('FRONTEND_URL')
+print(f"Raw FRONTEND_URL: '{FRONTEND_URL}'")
+print(f"FRONTEND_URL type: {type(FRONTEND_URL)}")
+print(f"FRONTEND_URL repr: {repr(FRONTEND_URL)}")
 
-# Allowed Hosts - Should be set from environment variable
+if FRONTEND_URL:
+    FRONTEND_URL = FRONTEND_URL.strip()
+    print(f"Cleaned FRONTEND_URL: '{FRONTEND_URL}'")
+
+
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',') if os.getenv('ALLOWED_HOSTS') else []
 
 # Override with production database if DATABASE_URL is provided
@@ -43,10 +47,25 @@ else:
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 
-# CORS Settings for Production
-CORS_ALLOWED_ORIGINS = [
-    FRONTEND_URL,  
-] if FRONTEND_URL else []
+# CORS Settings for Production with proper validation
+if FRONTEND_URL and FRONTEND_URL.strip():
+    # Ensure proper format
+    cleaned_url = FRONTEND_URL.strip()
+    
+    # Validate the URL format
+    if cleaned_url.startswith(('http://', 'https://')):
+        CORS_ALLOWED_ORIGINS = [cleaned_url]
+        print(f"CORS_ALLOWED_ORIGINS set to: {CORS_ALLOWED_ORIGINS}")
+    else:
+        # If missing scheme, add it based on content
+        if 'localhost' in cleaned_url or '127.0.0.1' in cleaned_url:
+            CORS_ALLOWED_ORIGINS = [f'http://{cleaned_url}']
+        else:
+            CORS_ALLOWED_ORIGINS = [f'https://{cleaned_url}']
+        print(f"Added scheme, CORS_ALLOWED_ORIGINS: {CORS_ALLOWED_ORIGINS}")
+else:
+    CORS_ALLOWED_ORIGINS = []
+    print("No FRONTEND_URL provided, CORS_ALLOWED_ORIGINS is empty")
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
